@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Сжать / Разжать</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            min-height: 100vh; display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #0f0f1a; color: #fff; transition: background 0.6s ease;
+        }
+        body.compressed { background: #1a0a2e; }
+        body.expanded { background: #0a2e1a; }
+        .buttons { display: flex; gap: 24px; margin-bottom: 32px; flex-wrap: wrap; justify-content: center; }
+        button {
+            padding: 16px 40px; font-size: 18px; font-weight: 600;
+            border: none; border-radius: 14px; cursor: pointer;
+            transition: all 0.2s ease; text-transform: uppercase; letter-spacing: 1px;
+        }
+        button:active { transform: scale(0.96); }
+        #compressBtn { background: linear-gradient(135deg, #e040fb, #7c4dff); color: #fff; box-shadow: 0 4px 20px rgba(224, 64, 251, 0.3); }
+        #compressBtn:hover { box-shadow: 0 6px 30px rgba(224, 64, 251, 0.5); transform: translateY(-2px); }
+        #expandBtn { background: linear-gradient(135deg, #00e676, #00b0ff); color: #fff; box-shadow: 0 4px 20px rgba(0, 230, 118, 0.3); }
+        #expandBtn:hover { box-shadow: 0 6px 30px rgba(0, 230, 118, 0.5); transform: translateY(-2px); }
+        button.active {
+            outline: 3px solid rgba(255, 255, 255, 0.85);
+            outline-offset: 2px;
+            filter: saturate(1.2);
+        }
+        .state-display {
+            text-align: center; padding: 20px 40px; border-radius: 16px;
+            background: rgba(255,255,255,0.05); backdrop-filter: blur(8px);
+            border: 1px solid rgba(255,255,255,0.1); min-width: 280px;
+        }
+        .state-label { font-size: 13px; text-transform: uppercase; letter-spacing: 2px; color: #888; margin-bottom: 8px; }
+        .state-value { font-size: 36px; font-weight: 800; transition: color 0.3s ease; }
+        .state-value.compressed { color: #e040fb; }
+        .state-value.expanded { color: #00e676; }
+        .pulse { animation: pulse 0.4s ease; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        .visual-box {
+            width: 100px; height: 100px; margin-bottom: 24px; border-radius: 20px;
+            transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex; align-items: center; justify-content: center; font-size: 40px;
+        }
+        .visual-box.compressed { width: 60px; height: 60px; background: linear-gradient(135deg, #e040fb, #7c4dff); border-radius: 14px; }
+        .visual-box.expanded { width: 140px; height: 140px; background: linear-gradient(135deg, #00e676, #00b0ff); border-radius: 24px; }
+        .connection-status { position: fixed; top: 12px; right: 16px; font-size: 12px; color: #555; display: flex; align-items: center; gap: 6px; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #f44336; transition: background 0.3s; }
+        .dot.connected { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+    </style>
+</head>
+<body>
+    <div class="connection-status">
+        <div class="dot" id="dot"></div>
+        <span id="connText">подключение...</span>
+    </div>
+
+    <div class="visual-box compressed" id="visualBox">✊</div>
+
+    <div class="buttons">
+        <button id="compressBtn">🔽 Сжать</button>
+        <button id="expandBtn">🔼 Разжать</button>
+    </div>
+
+    <div class="state-display">
+        <div class="state-label">Текущее состояние</div>
+        <div class="state-value compressed" id="stateValue">СЖАТО</div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script>
+        const compressBtn = document.getElementById('compressBtn');
+        const expandBtn = document.getElementById('expandBtn');
+        const stateValue = document.getElementById('stateValue');
+        const visualBox = document.getElementById('visualBox');
+        const dot = document.getElementById('dot');
+        const connText = document.getElementById('connText');
+
+        // Явно указываем WebSocket как приоритетный транспорт
+        const socket = io({ transports: ['websocket', 'polling'] });
+        let isApplyingHash = false;
+
+        const STATE_TO_URL = {
+            'сжато': 'compressed',
+            'разжато': 'expanded',
+        };
+
+        const URL_TO_STATE = {
+            compressed: 'сжато',
+            expanded: 'разжато',
+            // Поддержка старого формата из query-параметра
+            'сжато': 'сжато',
+            'разжато': 'разжато',
+        };
+
+        socket.on('connect', () => {
+            dot.classList.add('connected');
+            connText.textContent = 'онлайн';
+            console.log('✅ WebSocket подключён');
+
+            // При подключении читаем состояние из адресной строки
+            const stateFromUrl = readStateFromUrl();
+            if (stateFromUrl) {
+                sendState(stateFromUrl);
+            }
+        });
+
+        socket.on('disconnect', () => {
+            dot.classList.remove('connected');
+            connText.textContent = 'отключён';
+            console.log('❌ Соединение разорвано');
+        });
+
+        socket.on('state_update', (data) => {
+            console.log('📥 Получено состояние:', data.state);
+            applyState(data.state);
+        });
+
+        function applyState(value) {
+            const isCompressed = value === 'сжато';
+            
+            stateValue.textContent = isCompressed ? 'СЖАТО' : 'РАЗЖАТО';
+            stateValue.className = 'state-value ' + (isCompressed ? 'compressed' : 'expanded');
+            
+            visualBox.className = 'visual-box ' + (isCompressed ? 'compressed' : 'expanded');
+            visualBox.textContent = isCompressed ? '✊' : '✋';
+
+            compressBtn.classList.toggle('active', isCompressed);
+            expandBtn.classList.toggle('active', !isCompressed);
+            
+            document.body.className = isCompressed ? 'compressed' : 'expanded';
+
+            // Пульсация при изменении
+            stateValue.classList.add('pulse');
+            setTimeout(() => stateValue.classList.remove('pulse'), 400);
+
+            // Синхронизация адресной строки без перезагрузки: #compressed / #expanded
+            const hashValue = STATE_TO_URL[value];
+            if (hashValue && window.location.hash !== '#' + hashValue) {
+                isApplyingHash = true;
+                window.history.replaceState({}, '', '#' + hashValue);
+                isApplyingHash = false;
+            }
+        }
+
+        function sendState(state) {
+            console.log('📤 Отправляю состояние:', state);
+            socket.emit('change_state', { state });
+        }
+
+        compressBtn.addEventListener('click', () => sendState('сжато'));
+        expandBtn.addEventListener('click', () => sendState('разжато'));
+
+        function readStateFromUrl() {
+            const hashValue = window.location.hash.replace('#', '').trim().toLowerCase();
+            if (URL_TO_STATE[hashValue]) {
+                return URL_TO_STATE[hashValue];
+            }
+
+            // Обратная совместимость: ?state=...
+            const params = new URLSearchParams(window.location.search);
+            const queryState = (params.get('state') || '').trim().toLowerCase();
+            return URL_TO_STATE[queryState] || null;
+        }
+
+        // Изменение адресной строки мгновенно меняет общее состояние
+        window.addEventListener('hashchange', () => {
+            if (isApplyingHash) return;
+            const stateFromUrl = readStateFromUrl();
+            if (stateFromUrl) {
+                sendState(stateFromUrl);
+            }
+        });
+
+        // Поддержка изменения через ?state=... при навигации назад/вперёд
+        window.addEventListener('popstate', () => {
+            const stateFromUrl = readStateFromUrl();
+            if (stateFromUrl) {
+                sendState(stateFromUrl);
+            }
+        });
+    </script>
+</body>
+</html>
